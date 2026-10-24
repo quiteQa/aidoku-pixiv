@@ -17,6 +17,7 @@ pub const APP: &str = "https://app-api.pixiv.net";
 pub const WEB_LOGIN_KEY: &str = "webLogin";
 const OAUTH: &str = "https://oauth.secure.pixiv.net/auth/token";
 const APP_UA: &str = "PixivIOSApp/7.13.3 (iOS 14.6; iPhone13,2)";
+const RANKING_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 // Public mobile client parameters used by Pixiv's app API (not user credentials).
 const CLIENT_ID: &str = "MOBrBDS8blbauoSck0ZfDbtuzpyT";
 const CLIENT_SECRET: &str = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj";
@@ -129,11 +130,19 @@ pub fn cookie_header(cookies: &HashMap<String, String>) -> Option<String> {
 fn browser_request(path: &str, cookies: &HashMap<String, String>) -> Result<Request> {
     let header =
         cookie_header(cookies).ok_or_else(|| error!("网页登录会话缺少 PHPSESSID，请重新登录。"))?;
-    Ok(Request::get(format!("{WEB}{path}"))?
+    let request = Request::get(format!("{WEB}{path}"))?
         .header("Referer", "https://www.pixiv.net/")
+        .header("Accept", "application/json")
         .header("Accept-Language", "zh-CN,ja;q=0.9,en;q=0.8")
         .header("Cookie", header.as_str())
-        .timeout(30.0))
+        .timeout(30.0);
+    // ranking.php serves mobile HTML for an iPhone UA even with format=json.
+    // Keep Aidoku's browser identity for login validation and AJAX endpoints.
+    Ok(if path.starts_with("/ranking.php?") {
+        request.header("User-Agent", RANKING_UA)
+    } else {
+        request
+    })
 }
 
 pub fn validate_web(cookies: &HashMap<String, String>) -> Result<bool> {
@@ -144,7 +153,7 @@ pub fn validate_web(cookies: &HashMap<String, String>) -> Result<bool> {
     if matches!(response.status_code(), 400 | 401) {
         return Ok(false);
     }
-    let data = read_response(response)?;
+    let data = read_response(response, "登录验证")?;
     Ok(data.get("error").and_then(Value::as_bool) == Some(false)
         && data.get("body").is_some_and(Value::is_object))
 }
@@ -177,7 +186,12 @@ pub fn web_get(path: &str) -> Result<Value> {
     if setting(WEB_LOGIN_KEY, "").is_empty() {
         verify_saved_web_login()?;
     }
-    let value = read_response(browser_request(path, &cookies)?.send()?)?;
+    let context = if path.starts_with("/ranking.php?") {
+        "排行榜"
+    } else {
+        "网页接口"
+    };
+    let value = read_response(browser_request(path, &cookies)?.send()?, context)?;
     if path.starts_with("/ajax/") {
         if value.get("error").and_then(Value::as_bool) != Some(false) {
             bail!("Pixiv 拒绝了请求；请检查登录状态及作品访问权限。");
@@ -244,7 +258,7 @@ fn access_token(force_refresh: bool) -> Result<String> {
         clear_cache();
         bail!("Refresh Token 无效或已失效，请更换 Token 后重新验证登录。");
     }
-    let value = read_response(response)?;
+    let value = read_response(response, "Token 续期")?;
     // Pixiv has used both a top-level object and a nested `response` envelope.
     let token = value.get("response").unwrap_or(&value);
     let access = token
@@ -298,7 +312,7 @@ pub fn app_get(path: &str) -> Result<Value> {
             }
             bail!("Pixiv 拒绝了请求，请检查 Token 和搜索条件。");
         }
-        let value = read_response(response)?;
+        let value = read_response(response, "App 接口")?;
         if value
             .get("error")
             .is_some_and(|e| !e.is_null() && e != false)
@@ -310,11 +324,24 @@ pub fn app_get(path: &str) -> Result<Value> {
     bail!("Token 自动续期失败，请重新登录。");
 }
 
-fn read_response(response: Response) -> Result<Value> {
+fn read_response(response: Response, context: &str) -> Result<Value> {
     match response.status_code() {
-        200..=299 => response
-            .get_json_owned()
-            .map_err(|_| error!("Pixiv 返回了无法识别的响应，请稍后重试。")),
+        status @ 200..=299 => {
+            let data = response
+                .get_data()
+                .map_err(|_| error!("Pixiv {context}响应读取失败，请检查网络后重试。"))?;
+            let first = data.iter().find(|b| !b.is_ascii_whitespace());
+            if first.is_none() {
+                bail!("Pixiv {context}返回了空响应（HTTP {status}），请稍后重试。");
+            }
+            serde_json::from_slice(&data).map_err(|_| {
+                if first == Some(&b'<') {
+                    error!("Pixiv {context}返回了 HTML 网页（HTTP {status}），请在网页登录中检查是否需要验证。")
+                } else {
+                    error!("Pixiv {context}返回了无效的 JSON 数据（HTTP {status}），请稍后重试。")
+                }
+            })
+        }
         401 => Err(error!("登录已失效，请在源设置中重新登录。")),
         403 => Err(error!(
             "Pixiv 拒绝访问，请检查账号权限或在网页登录中完成验证。"

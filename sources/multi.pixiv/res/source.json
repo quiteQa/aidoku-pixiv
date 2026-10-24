@@ -2,7 +2,7 @@
 	"info": {
 		"id": "multi.pixiv",
 		"name": "Pixiv",
-		"version": 3,
+		"version": 4,
 		"url": "https://www.pixiv.net",
 		"contentRating": 1,
 		"languages": [

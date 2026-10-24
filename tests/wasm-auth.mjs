@@ -67,9 +67,9 @@ async function host(initial = {}, responder = () => { throw Error('unexpected HT
       set_header: (id, kp, kn, vp, vn) => { objects.get(id).headers[read(kp, kn).toLowerCase()] = read(vp, vn); return 0; },
       set_body: (id, p, n) => { objects.get(id).body = read(p, n); return 0; },
       set_timeout: () => 0, set_rate_limit: () => 0,
-      send: id => { const request = objects.get(id); requests.push(structuredClone(request)); const response = responder(request, requests); request.status = response.status ?? 200; request.data = Buffer.from(typeof response.body === 'string' ? response.body : JSON.stringify(response.body)); return 0; },
+      send: id => { const request = objects.get(id); requests.push(structuredClone(request)); const response = responder(request, requests); request.status = response.status ?? 200; request.dataError = response.dataError; request.data = Buffer.from(typeof response.body === 'string' ? response.body : JSON.stringify(response.body)); return 0; },
       get_status_code: id => objects.get(id).status,
-      data_len: id => objects.get(id).data.length,
+      data_len: id => objects.get(id).dataError ?? objects.get(id).data.length,
       read_data: (id, p) => copy(p, objects.get(id).data),
     },
     html: {
@@ -85,6 +85,7 @@ async function host(initial = {}, responder = () => { throw Error('unexpected HT
     login: cookies => result(api.handle_web_login(descriptor(string('webLogin')), descriptor(array(Object.keys(cookies), string)), descriptor(array(Object.values(cookies), string)))).byte(),
     notify: name => assert.equal(api.handle_notification(descriptor(string(name))), 0),
     search: (query = '', page = 1, filters = []) => result(api.get_search_manga_list(descriptor(bytes(query)), page, descriptor([ ...uint(filters.length), ...filters.flat() ]))).list(),
+    ranking: (id = 'daily', page = 1) => result(api.get_manga_list(descriptor([...string(id), ...string(id), 0]), page)).list(),
     images: url => {
       const rid = result(api.get_image_request(descriptor(string(url)), -1)).uint();
       // i32 uses zigzag encoding in postcard; a positive Rid is doubled.
@@ -277,7 +278,7 @@ await test('callback persists complete web login before any host UI commit', asy
   const h = await host({},r=>{
     const cookies=Object.fromEntries(r.headers.cookie.split('; ').map(pair=>pair.split('=')));
     assert.equal(cookies.PHPSESSID,'123_session'); assert.equal(cookies.cc1,'JP'); assert.equal(cookies.device_token,'device');
-    assert.ok(!r.headers['user-agent'],'web requests should use Aidoku default UA');
+    if (!r.url.includes('/ranking.php?')) assert.ok(!r.headers['user-agent'],'login and AJAX requests should use Aidoku default UA');
     return webResponse(r);
   });
   assert.equal(h.login(webCookies),1); assert.deepEqual(storedCookies(h),webCookies); assert.equal(h.prefs.get('webLogin'),'logged_in');
@@ -309,5 +310,51 @@ await test('site cookies are sent safely and Cloudflare cookies stay host-manage
     return webResponse(r);
   });
   assert.equal(h.login(cookies),1); h.search(); assert.ok(!h.logs.join('').includes('123_session'));
+});
+await test('all four ranking tabs request desktop JSON with saved cookies and pagination', async () => {
+  const h = await host({}, r => {
+    if (!r.url.includes('/ranking.php?')) {
+      assert.ok(!r.headers['user-agent']); return webResponse(r);
+    }
+    // Pixiv returns a mobile HTML page for the iPhone UA supplied by Aidoku.
+    const ua = r.headers['user-agent'] ?? 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) Mobile/15E148';
+    if (/iPhone|Mobile/.test(ua)) return {body:'<!DOCTYPE html><html><title>[pixiv]</title></html>'};
+    assert.equal(r.headers.accept, 'application/json');
+    assert.deepEqual(Object.fromEntries(r.headers.cookie.split('; ').map(pair => pair.split('='))), webCookies);
+    const u = new URL(r.url); assert.equal(u.searchParams.get('format'), 'json');
+    assert.ok(['daily','weekly','monthly'].includes(u.searchParams.get('mode')));
+    const page = Number(u.searchParams.get('p'));
+    return {body:{contents:[{illust_id:page,title:'desktop ranking',aiType:1,xRestrict:0}],next:page === 1 ? 2 : 0}};
+  });
+  assert.equal(h.login(webCookies), 1);
+  for (const id of ['daily','weekly','monthly','manga']) {
+    assert.equal(h.ranking(id).entries[0].key, '1'); assert.equal(h.ranking(id).next, true);
+    const request = new URL(h.requests.at(-1).url);
+    assert.equal(request.searchParams.get('mode'), id === 'manga' ? 'daily' : id);
+    assert.equal(request.searchParams.get('content'), id === 'manga' ? 'manga' : null);
+    const second = h.ranking(id, 2); assert.equal(second.entries[0].key, '2'); assert.equal(second.next, false);
+  }
+  assert.equal(h.search().entries[0].key,'1'); h.restart(); assert.equal(h.ranking().entries[0].key,'1');
+});
+await test('HTML ranking responses identify the failing endpoint and preserve the web session', async () => {
+  let blocked = true;
+  const h = await host({}, r => r.url.includes('/ranking.php?') && blocked
+    ? {body:' \n<!DOCTYPE html><html>private_response_do_not_log</html>'} : webResponse(r));
+  assert.equal(h.login(webCookies), 1);
+  assert.throws(() => h.ranking(), /排行榜.*HTML.*HTTP 200/);
+  assert.deepEqual(storedCookies(h), webCookies); assert.equal(h.prefs.get('webLogin'), 'logged_in');
+  assert.ok(!h.logs.join('').includes('private_response_do_not_log'));
+  blocked = false; assert.equal(h.ranking().entries[0].key, '123');
+});
+await test('empty, malformed JSON and unreadable responses have distinct diagnostics', async () => {
+  for (const [response, message] of [
+    [{body:' \r\n'}, /排行榜.*空响应/],
+    [{body:'{"contents":'}, /排行榜.*无效的 JSON/],
+    [{body:'',dataError:-7}, /排行榜.*读取失败/],
+  ]) {
+    const h = await host({webLogin:'logged_in','webLogin.keys':['PHPSESSID'],'webLogin.values':['123_session']}, () => response);
+    assert.throws(() => h.ranking(), message); assert.equal(h.requests.length, 1);
+    assert.equal(h.prefs.get('webLogin'), 'logged_in');
+  }
 });
 console.log(`${passed} WASM integration tests passed.`);

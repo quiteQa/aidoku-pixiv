@@ -4,9 +4,9 @@
 		{
 			"id": "multi.pixiv",
 			"name": "Pixiv",
-			"version": 3,
-			"iconURL": "icons/multi.pixiv-v3.png",
-			"downloadURL": "sources/multi.pixiv-v3.aix",
+			"version": 4,
+			"iconURL": "icons/multi.pixiv-v4.png",
+			"downloadURL": "sources/multi.pixiv-v4.aix",
 			"languages": [
 				"zh",
 				"ja",

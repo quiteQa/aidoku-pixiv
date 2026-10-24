@@ -38,9 +38,11 @@ https://raw.githubusercontent.com/quiteQa/aidoku-pixiv/gh-pages/index.min.json
 
 如果网页会话失效，退出后重新网页登录；Access Token 失效则更新 Token。遇到频率限制请稍后重试。如果网页验证码无法完成，可使用 Token 登录。
 
-第 3 版修复了“网页已登录但源仍提示先登录”的会话保存问题：登录入口使用 `pixiv.net`，兼容 Aidoku 对 `.pixiv.net` 父域 Cookie 的提取；回调主动持久化 Cookie，并在 Pixiv 验证成功后保存登录标记。请求使用完整的站点会话 Cookie 和 Aidoku 默认浏览器标识；Cloudflare 验证 Cookie 由客户端管理。旧版若已有 Cookie 但缺少登录标记，可在服务端验证后自动恢复，验证暂时失败时保留 Cookie；退出登录会清除会话。
+第 4 版修复了排行榜显示“无法识别的响应”的问题：Pixiv 的 `ranking.php?format=json` 在 Aidoku 默认的 iPhone 浏览器标识下仍返回移动版 HTML 网页。排行榜请求单独使用桌面浏览器标识并声明接收 JSON；网页登录验证、搜索和作品详情仍使用 Aidoku 默认标识。错误提示区分 HTML 网页、空响应、无效 JSON 和读取失败，并标明失败的接口类型，不输出响应正文或凭据。
 
-更新到第 3 版后，如果旧版从未捕获到 Cookie，请在源设置中再次打开“登录 Pixiv”。网页登录通常仍然有效，等待源验证并自动关闭窗口即可；不需要向他人提供 Cookie 或 Token。
+第 3 版已修复“网页已登录但源仍提示先登录”的会话保存问题：登录入口使用 `pixiv.net`，兼容 Aidoku 对 `.pixiv.net` 父域 Cookie 的提取；回调主动持久化 Cookie，并在 Pixiv 验证成功后保存登录标记。请求使用完整的站点会话 Cookie；Cloudflare 验证 Cookie 由客户端管理。旧版若已有 Cookie 但缺少登录标记，可在服务端验证后自动恢复，验证暂时失败时保留 Cookie；退出登录会清除会话。
+
+更新到第 4 版后，已保存的登录状态会继续使用，返回排行榜重试即可。如果第 1/2 版从未捕获到 Cookie，请在源设置中再次打开“登录 Pixiv”，等待源验证并自动关闭窗口；不需要向他人提供 Cookie 或 Token。
 
 ## 构建与验证
 
@@ -92,8 +94,8 @@ cargo test --lib --release --target x86_64-pc-windows-gnu --locked
 ### 当前验证结果
 
 - 成功编译 release WASM，官方 Schema 配置校验及 Clippy 检查通过。
-- 9 项 Rust 解析测试和 25 项 WASM 集成测试，覆盖 Cookie 验证、过期会话、两种 Token、续期与轮换、认证失败重试、分页、详情、图片顺序、退出清理、内容过滤和旧设置迁移，以及父域 Cookie 提取、登录后重启、缺失标记恢复和验证失败后的会话保留。
-- 已通过不带用户凭据的只读请求核对公开排行榜、搜索、作品详情和图片列表响应。
+- 9 项 Rust 解析测试和 28 项 WASM 集成测试，覆盖 Cookie 验证、过期会话、两种 Token、续期与轮换、认证失败重试、分页、详情、图片顺序、退出清理、内容过滤和旧设置迁移，以及父域 Cookie 提取、登录后重启、缺失标记恢复和验证失败后的会话保留。排行榜回归覆盖四个页签、翻页、iPhone HTML 响应和错误类型区分。
+- 已通过不带用户凭据的只读请求复现 iPhone 标识返回 HTML、桌面标识返回 JSON；修复所用标识下四种排行榜前两页均返回 50 项，并核对默认移动标识下批量过滤元数据、搜索、作品详情和图片列表的 JSON 响应。
 - **尚未使用真实账号在 Aidoku 设备上完成网页登录、Token 兑换及阅读验收。** 集成测试使用模拟 HTTP 响应，不等于真实账号联调通过。
 
 ## 开发参考
