@@ -179,7 +179,8 @@ await test('web ranking, details, pages and logged-out session isolation', async
   });
   assert.equal(h.search().entries[0].title, '排行作品'); assert.equal(h.search().next, true);
   assert.equal(h.detail('123').chapters[0].key, '123'); assert.deepEqual(h.pages('123'), ['https://i.pximg.net/0.png', 'https://i.pximg.net/1.png']);
-  h.prefs.delete('webLogin'); const count = h.requests.length; assert.throws(() => h.search(), /网页登录/); assert.equal(h.requests.length, count);
+  for (const key of ['webLogin','webLogin.keys','webLogin.values']) h.prefs.delete(key);
+  const count = h.requests.length; assert.throws(() => h.search(), /网页登录/); assert.equal(h.requests.length, count);
 });
 await test('HTTP 400 OAuth error renews token and resumes the original search', async () => {
   let exchanges = 0, apiCalls = 0;
@@ -256,5 +257,57 @@ await test('old adult preference migrates once and fresh installs default to web
   old.prefs.set('showAdult',false); old.restart(); assert.equal(old.prefs.get('showAdult'),false);
   const hidden = await host({hideAdult:true}); assert.equal(hidden.prefs.get('showAdult'),false);
   const fresh = await host(); assert.equal(fresh.prefs.get('authMode'),'web'); assert.equal(fresh.prefs.get('showAI')??false,false); assert.equal(fresh.prefs.get('showAdult')??false,false);
+});
+const settings = JSON.parse(readFileSync(new URL('../sources/multi.pixiv/res/settings.json', import.meta.url), 'utf8'));
+const webLoginSetting = settings.flatMap(group => group.items).find(item => item.key === 'webLogin');
+const webCookies = { PHPSESSID:'123_session', cc1:'JP', device_token:'device' };
+const storedCookies = h => Object.fromEntries((h.prefs.get('webLogin.keys')??[]).map((key,i)=>[key,h.prefs.get('webLogin.values')[i]]));
+const webResponse = request => request.url.includes('/ajax/user/extra?')
+  ? {body:{error:false,body:{following:1}}}
+  : {body:{contents:[{illust_id:123,title:'saved session',aiType:1,xRestrict:0}],next:0}};
+await test('native login captures Pixiv parent-domain session cookies', async () => {
+  const jar = [{name:'PHPSESSID',value:'123_session',domain:'.pixiv.net'}, {name:'cc1',value:'JP',domain:'.pixiv.net'}];
+  // Match Aidoku's WKWebView.getCookies(for:) host filtering exactly.
+  const domain = new URL(webLoginSetting.url).hostname;
+  const captured = Object.fromEntries(jar.filter(cookie=>cookie.domain.includes(domain)).map(cookie=>[cookie.name,cookie.value]));
+  assert.equal(captured.PHPSESSID,'123_session','login entry host must include the .pixiv.net cookie domain');
+  const h = await host({},webResponse); assert.equal(h.login(captured),1);
+});
+await test('callback persists complete web login before any host UI commit', async () => {
+  const h = await host({},r=>{
+    const cookies=Object.fromEntries(r.headers.cookie.split('; ').map(pair=>pair.split('=')));
+    assert.equal(cookies.PHPSESSID,'123_session'); assert.equal(cookies.cc1,'JP'); assert.equal(cookies.device_token,'device');
+    assert.ok(!r.headers['user-agent'],'web requests should use Aidoku default UA');
+    return webResponse(r);
+  });
+  assert.equal(h.login(webCookies),1); assert.deepEqual(storedCookies(h),webCookies); assert.equal(h.prefs.get('webLogin'),'logged_in');
+  h.restart(); assert.equal(h.search().entries[0].key,'123');
+});
+await test('existing cookies recover a missing v1/v2 logged-in marker', async () => {
+  const h=await host({'webLogin.keys':Object.keys(webCookies),'webLogin.values':Object.values(webCookies)},webResponse);
+  assert.equal(h.search().entries[0].key,'123'); assert.equal(h.prefs.get('webLogin'),'logged_in');
+});
+await test('transient verification failure preserves cookies for a later retry', async () => {
+  let blocked=true;
+  const h=await host({},r=>blocked ? {status:503,body:{}} : webResponse(r));
+  assert.throws(()=>h.login(webCookies),/验证|HTTP/); assert.deepEqual(storedCookies(h),webCookies); assert.ok(!h.prefs.get('webLogin'));
+  blocked=false; assert.equal(h.search().entries[0].key,'123'); assert.equal(h.prefs.get('webLogin'),'logged_in');
+});
+await test('logout and cleared browser cookies cannot restore a stale session', async () => {
+  const h=await host({},webResponse); assert.equal(h.login(webCookies),1);
+  for(const key of ['webLogin','webLogin.keys','webLogin.values']) h.prefs.delete(key);
+  h.notify('webLoginChanged'); h.restart(); const before=h.requests.length;
+  assert.throws(()=>h.search(),/登录/); assert.equal(h.requests.length,before);
+  assert.equal(h.login(webCookies),1); assert.equal(h.login({device_token:'guest'}),0);
+  assert.ok(!h.prefs.get('webLogin')); assert.deepEqual(storedCookies(h),{});
+});
+await test('site cookies are sent safely and Cloudflare cookies stay host-managed', async () => {
+  const cookies={...webCookies,cf_clearance:'old',__cf_bm:'old','bad;name':'bad',injected:'bad\r\nX-Injected:yes'};
+  const h=await host({},r=>{
+    assert.ok(r.headers.cookie.includes('cc1=JP')); assert.ok(!r.headers.cookie.includes('cf_clearance'));
+    assert.ok(!r.headers.cookie.includes('__cf')); assert.ok(!r.headers.cookie.includes('bad;name')); assert.ok(!r.headers.cookie.includes('\r'));
+    return webResponse(r);
+  });
+  assert.equal(h.login(cookies),1); h.search(); assert.ok(!h.logs.join('').includes('123_session'));
 });
 console.log(`${passed} WASM integration tests passed.`);

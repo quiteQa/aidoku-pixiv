@@ -34,7 +34,7 @@
 				"method": "web",
 				"key": "webLogin",
 				"title": "登录 Pixiv",
-				"url": "https://www.pixiv.net/login.php",
+				"url": "https://pixiv.net/login.php",
 				"logoutTitle": "退出 Pixiv",
 				"clearCookiesOnLogOut": true,
 				"notification": "webLoginChanged",

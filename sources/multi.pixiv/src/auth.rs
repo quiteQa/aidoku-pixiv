@@ -14,6 +14,7 @@ use serde_json::Value;
 
 pub const WEB: &str = "https://www.pixiv.net";
 pub const APP: &str = "https://app-api.pixiv.net";
+pub const WEB_LOGIN_KEY: &str = "webLogin";
 const OAUTH: &str = "https://oauth.secure.pixiv.net/auth/token";
 const APP_UA: &str = "PixivIOSApp/7.13.3 (iOS 14.6; iPhone13,2)";
 // Public mobile client parameters used by Pixiv's app API (not user credentials).
@@ -87,37 +88,96 @@ pub fn session(cookies: &HashMap<String, String>) -> Option<&str> {
     })
 }
 
-fn browser_request(path: &str, session: &str) -> Result<Request> {
+pub fn clear_web_login() {
+    for key in [WEB_LOGIN_KEY, "webLogin.keys", "webLogin.values"] {
+        defaults_set(key, DefaultValue::Null);
+    }
+}
+
+pub fn save_web_cookies(cookies: HashMap<String, String>) {
+    defaults_set(WEB_LOGIN_KEY, DefaultValue::HashMap(cookies));
+    // A saved snapshot is distinct from a session verified by the server.
+    defaults_set(WEB_LOGIN_KEY, DefaultValue::Null);
+}
+
+pub fn cookie_header(cookies: &HashMap<String, String>) -> Option<String> {
+    let mut header = format!("PHPSESSID={}", session(cookies)?);
+    for (name, value) in cookies {
+        // Let Aidoku manage Cloudflare cookies with its current browser identity.
+        if name == "PHPSESSID"
+            || name == "cf_clearance"
+            || name.starts_with("__cf")
+            || name.starts_with("_cf")
+        {
+            continue;
+        }
+        let valid_name = !name.is_empty()
+            && name
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&c));
+        let valid_value = !value.is_empty()
+            && value
+                .bytes()
+                .all(|c| matches!(c, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e));
+        if valid_name && valid_value {
+            header.push_str(&format!("; {name}={value}"));
+        }
+    }
+    Some(header)
+}
+
+fn browser_request(path: &str, cookies: &HashMap<String, String>) -> Result<Request> {
+    let header =
+        cookie_header(cookies).ok_or_else(|| error!("网页登录会话缺少 PHPSESSID，请重新登录。"))?;
     Ok(Request::get(format!("{WEB}{path}"))?
         .header("Referer", "https://www.pixiv.net/")
-        .header("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1")
         .header("Accept-Language", "zh-CN,ja;q=0.9,en;q=0.8")
-        .header("Cookie", format!("PHPSESSID={session}").as_str())
+        .header("Cookie", header.as_str())
         .timeout(30.0))
 }
 
 pub fn validate_web(cookies: &HashMap<String, String>) -> Result<bool> {
-    let Some(session) = session(cookies) else {
-        return Ok(false);
-    };
-    let response = browser_request("/ajax/user/extra?lang=zh", session)?.send()?;
-    if response.status_code() != 200 {
+    if session(cookies).is_none() {
         return Ok(false);
     }
-    let data: Value = response
-        .get_json_owned()
-        .map_err(|_| error!("Pixiv 登录验证返回了无法识别的响应，请重试。"))?;
+    let response = browser_request("/ajax/user/extra?lang=zh", cookies)?.send()?;
+    if matches!(response.status_code(), 400 | 401) {
+        return Ok(false);
+    }
+    let data = read_response(response)?;
     Ok(data.get("error").and_then(Value::as_bool) == Some(false)
         && data.get("body").is_some_and(Value::is_object))
 }
 
-pub fn web_get(path: &str) -> Result<Value> {
-    if setting("webLogin", "").is_empty() {
+fn saved_web_cookies() -> Result<HashMap<String, String>> {
+    let cookies = defaults_get_map(WEB_LOGIN_KEY).unwrap_or_default();
+    if cookies.is_empty() {
         bail!("请先在源设置中选择网页登录，并完成 Pixiv 登录。");
     }
-    let cookies = defaults_get_map("webLogin").unwrap_or_default();
-    let session = session(&cookies).ok_or_else(|| error!("网页登录已失效，请退出后重新登录。"))?;
-    let value = read_response(browser_request(path, session)?.send()?)?;
+    if session(&cookies).is_none() {
+        bail!("未保存 Pixiv 登录 Cookie，请打开登录窗口重新确认登录。");
+    }
+    Ok(cookies)
+}
+
+pub fn verify_saved_web_login() -> Result<()> {
+    if !validate_web(&saved_web_cookies()?)? {
+        defaults_set(WEB_LOGIN_KEY, DefaultValue::Null);
+        bail!("网页会话未通过 Pixiv 验证，请在登录窗口重新确认登录。");
+    }
+    set_string(WEB_LOGIN_KEY, "logged_in");
+    set_string("loginStatus", "网页登录会话已验证并保存。");
+    Ok(())
+}
+
+pub fn web_get(path: &str) -> Result<Value> {
+    let cookies = saved_web_cookies()?;
+    // v1/v2 could save cookies without the UI marker. Recover from the actual
+    // credentials after server verification instead of treating the marker as auth.
+    if setting(WEB_LOGIN_KEY, "").is_empty() {
+        verify_saved_web_login()?;
+    }
+    let value = read_response(browser_request(path, &cookies)?.send()?)?;
     if path.starts_with("/ajax/") {
         if value.get("error").and_then(Value::as_bool) != Some(false) {
             bail!("Pixiv 拒绝了请求；请检查登录状态及作品访问权限。");

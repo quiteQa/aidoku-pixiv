@@ -151,11 +151,7 @@ impl Pixiv {
                 bail!("Pixiv 未返回有效的登录状态。");
             }
         } else {
-            if auth::setting("webLogin", "").is_empty()
-                || !auth::validate_web(&defaults_get_map("webLogin").unwrap_or_default())?
-            {
-                bail!("网页登录已失效，请退出后重新登录。");
-            }
+            auth::verify_saved_web_login()?;
         }
         Ok(())
     }
@@ -330,15 +326,38 @@ impl ImageRequestProvider for Pixiv {
 
 impl WebLoginHandler for Pixiv {
     fn handle_web_login(&self, key: String, cookies: HashMap<String, String>) -> Result<bool> {
-        if key != "webLogin" {
+        if key != auth::WEB_LOGIN_KEY {
             return Ok(false);
         }
-        if auth::validate_web(&cookies)? {
-            auth::set_string("authMode", "web");
-            auth::set_string("loginStatus", "网页登录成功");
-            Ok(true)
-        } else {
-            Ok(false)
+        if auth::session(&cookies).is_none() {
+            auth::clear_web_login();
+            auth::set_string("loginStatus", "尚未获取 Pixiv 登录 Cookie。");
+            return Ok(false);
+        }
+        // Persist the callback snapshot ourselves. Aidoku's UI only commits its
+        // logged-in marker after this callback succeeds, so it cannot own storage.
+        auth::save_web_cookies(cookies.clone());
+        match auth::validate_web(&cookies) {
+            Ok(true) => {
+                auth::set_string(auth::WEB_LOGIN_KEY, "logged_in");
+                auth::set_string("authMode", "web");
+                auth::set_string("loginStatus", "网页登录会话已验证并保存。");
+                Ok(true)
+            }
+            Ok(false) => {
+                auth::set_string(
+                    "loginStatus",
+                    "网页会话未通过 Pixiv 验证，请在窗口中完成登录。",
+                );
+                Ok(false)
+            }
+            Err(error) => {
+                auth::set_string(
+                    "loginStatus",
+                    "网页 Cookie 已保存，但会话验证失败；请检查网络或完成网页验证后重试。",
+                );
+                Err(error)
+            }
         }
     }
 }
@@ -355,8 +374,22 @@ impl NotificationHandler for Pixiv {
                 defaults_set("tokenInput", DefaultValue::Null);
                 auth::set_string("loginStatus", "Token 已清除。");
             }
-            "authChanged" | "webLoginChanged" => {
-                auth::set_string("loginStatus", "登录方式或会话已变更，请验证当前登录。")
+            "webLoginChanged" => {
+                let cookies = defaults_get_map(auth::WEB_LOGIN_KEY).unwrap_or_default();
+                if auth::session(&cookies).is_none() {
+                    auth::clear_web_login();
+                    auth::set_string("loginStatus", "网页登录已退出。");
+                }
+            }
+            "authChanged" => {
+                let status = if auth::token_mode() {
+                    "已选择 Token 登录，可在下方验证 Token。"
+                } else if !auth::setting(auth::WEB_LOGIN_KEY, "").is_empty() {
+                    "已使用保存的网页登录会话。"
+                } else {
+                    "已选择网页登录，请点击“登录 Pixiv”。"
+                };
+                auth::set_string("loginStatus", status);
             }
             "validateLogin" => {
                 let status = match self.validate() {
