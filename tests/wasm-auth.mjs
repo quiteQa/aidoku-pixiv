@@ -81,6 +81,7 @@ async function host(initial = {}, responder = () => { throw Error('unexpected HT
   const descriptor = data => save(Buffer.from(data));
   return {
     prefs, requests, logs, tick: seconds => { now += seconds; },
+    restart: () => api.start(),
     login: cookies => result(api.handle_web_login(descriptor(string('webLogin')), descriptor(array(Object.keys(cookies), string)), descriptor(array(Object.values(cookies), string)))).byte(),
     notify: name => assert.equal(api.handle_notification(descriptor(string(name))), 0),
     search: (query = '', page = 1, filters = []) => result(api.get_search_manga_list(descriptor(bytes(query)), page, descriptor([ ...uint(filters.length), ...filters.flat() ]))).list(),
@@ -121,7 +122,7 @@ await test('web search encodes query, filters and preserves upstream pagination'
   const h = await host({ webLogin: 'logged_in', 'webLogin.keys': ['PHPSESSID'], 'webLogin.values': ['123_session'] }, r => {
     const u = new URL(r.url); assert.equal(u.searchParams.get('word'), '猫 &+'); assert.equal(u.searchParams.get('s_mode'), 's_tag_full');
     assert.equal(u.searchParams.get('order'), 'date'); assert.equal(u.searchParams.get('p'), '2');
-    return { body: { error: false, body: { illustManga: { data: [{ id: '123', title: '猫', illustType: 0, xRestrict: 0 }], total: 121 } } } };
+    return { body: { error: false, body: { illustManga: { data: [{ id: '123', title: '猫', illustType: 0, xRestrict: 0, aiType: 1 }], total: 121 } } } };
   });
   const list = h.search('猫 &+', 2, [[3, ...string('match'), ...string('exact')], [1, ...string('sort'), 0, 1]]);
   assert.equal(list.entries[0].key, '123'); assert.equal(list.next, true);
@@ -168,10 +169,11 @@ await test('actual WASM details, chapters and multi-page image order', async () 
   h.prefs.set('originalImages', false); assert.deepEqual(h.pages('123'), ['https://i.pximg.net/0.jpg', 'https://i.pximg.net/1.jpg']);
 });
 await test('web ranking, details, pages and logged-out session isolation', async () => {
-  const webItem = { id: '123', title: '网页作品', userName: '作者', pageCount: 2, urls: { regular: 'https://i.pximg.net/cover.jpg' }, tags: { tags: [{ tag: '猫' }] } };
+  const webItem = { id: '123', title: '网页作品', userName: '作者', pageCount: 2, aiType: 1, xRestrict: 0, urls: { regular: 'https://i.pximg.net/cover.jpg' }, tags: { tags: [{ tag: '猫' }] } };
   const h = await host({ webLogin: 'logged_in', 'webLogin.keys': ['PHPSESSID'], 'webLogin.values': ['123_session'] }, r => {
     assert.equal(r.headers.cookie, 'PHPSESSID=123_session');
     if (r.url.includes('ranking.php')) return { body: { contents: [{ illust_id: 123, title: '排行作品', illust_type: '1' }], next: 2 } };
+    if (r.url.includes('/recommend/illusts?')) return { body: { error: false, body: { illusts: [webItem] } } };
     if (r.url.includes('/pages?')) return { body: { error: false, body: [{ urls: { original: 'https://i.pximg.net/0.png' } }, { urls: { original: 'https://i.pximg.net/1.png' } }] } };
     return { body: { error: false, body: webItem } };
   });
@@ -205,5 +207,54 @@ await test('clear token removes credentials and blocks subsequent API access', a
   const h = await host({ authMode: 'token', tokenInput: 'refresh', cachedAccess: 'cached', cachedRefresh: 'rotated', expiresAt: '9999999999', tokenFingerprint: 'hash' });
   h.notify('clearToken'); for (const key of ['tokenInput', 'cachedAccess', 'cachedRefresh', 'expiresAt', 'tokenFingerprint']) assert.ok(!h.prefs.has(key));
   assert.throws(() => h.search(), /填写 Token/); assert.equal(h.requests.length, 0);
+});
+await test('content switches independently filter app search and preserve pagination', async () => {
+  const entries = [
+    { ...appItem, id: 1, illust_ai_type: 1, x_restrict: 0 },
+    { ...appItem, id: 2, illust_ai_type: 2, x_restrict: 0 },
+    { ...appItem, id: 3, illust_ai_type: 1, x_restrict: 1 },
+    { ...appItem, id: 4, illust_ai_type: 2, x_restrict: 2 },
+  ];
+  for (const [showAI, showAdult, ids] of [[false,false,['1']], [true,false,['1','2']], [false,true,['1','3']], [true,true,['1','2','3','4']]]) {
+    const h = await host({ authMode:'token', tokenKind:'access', tokenInput:'access', showAI, showAdult }, r => {
+      assert.equal(new URL(r.url).searchParams.get('search_ai_type'), showAI ? '1' : '0');
+      return { body: { illusts: entries, next_url:'https://app-api.pixiv.net/next' } };
+    });
+    const page = h.search('猫'); assert.deepEqual(page.entries.map(m => m.key), ids); assert.equal(page.next, true);
+  }
+  const h = await host({ authMode:'token', tokenKind:'access', tokenInput:'access' }, () => ({ body: { illusts:entries.slice(1), next_url:'next' } }));
+  const page = h.search('猫'); assert.equal(page.entries.length, 0); assert.equal(page.next, true);
+});
+await test('web search uses server flags and local filtering in both switch states', async () => {
+  const entries = [{id:'1',aiType:1,xRestrict:0},{id:'2',aiType:2,xRestrict:0},{id:'3',aiType:1,xRestrict:1}];
+  for (const [showAI, showAdult, ids] of [[false,false,['1']], [true,true,['1','2','3']]]) {
+    const h = await host({ webLogin:'logged_in', 'webLogin.keys':['PHPSESSID'], 'webLogin.values':['123_session'], showAI, showAdult }, r => {
+      const params = new URL(r.url).searchParams; assert.equal(params.get('ai_type'), showAI ? '0' : '1'); assert.equal(params.get('mode'), showAdult ? 'all' : 'safe');
+      return { body: { error:false, body:{illustManga:{data:entries,total:120}} } };
+    });
+    const page = h.search('猫'); assert.deepEqual(page.entries.map(m => m.key), ids); assert.equal(page.next, true); assert.equal(h.requests.length, 1);
+  }
+});
+await test('ranking batches missing AI metadata without changing rank order', async () => {
+  const h = await host({ webLogin:'logged_in', 'webLogin.keys':['PHPSESSID'], 'webLogin.values':['123_session'] }, r => {
+    if (r.url.includes('ranking.php')) return {body:{contents:[{illust_id:3,title:'third'},{illust_id:2,title:'AI'},{illust_id:1,title:'first'}],next:2}};
+    const ids = new URL(r.url).searchParams.getAll('illust_ids[]'); assert.deepEqual(ids,['3','2','1']);
+    return {body:{error:false,body:{illusts:[{id:'1',aiType:1,xRestrict:0},{id:'2',aiType:2,xRestrict:0},{id:'3',aiType:1,xRestrict:0}]}}};
+  });
+  const page=h.search(); assert.deepEqual(page.entries.map(m=>m.key),['3','1']); assert.equal(page.next,true); assert.equal(h.requests.length,2);
+});
+await test('filters also protect direct IDs and already saved reader entries', async () => {
+  for (const field of ['showAI','showAdult']) {
+    const item = { ...appItem, illust_ai_type:field==='showAI'?2:1, x_restrict:field==='showAdult'?1:0 };
+    const h = await host({authMode:'token',tokenKind:'access',tokenInput:'access'},()=>({body:{illust:item}}));
+    assert.throws(()=>h.search('123'),/内容过滤/); assert.throws(()=>h.pages('123'),/内容过滤/);
+    h.prefs.set(field,true); assert.equal(h.search('123').entries[0].key,'123'); assert.equal(h.pages('123').length,2);
+  }
+});
+await test('old adult preference migrates once and fresh installs default to web login', async () => {
+  const old = await host({hideAdult:false}); assert.equal(old.prefs.get('showAdult'),true);
+  old.prefs.set('showAdult',false); old.restart(); assert.equal(old.prefs.get('showAdult'),false);
+  const hidden = await host({hideAdult:true}); assert.equal(hidden.prefs.get('showAdult'),false);
+  const fresh = await host(); assert.equal(fresh.prefs.get('authMode'),'web'); assert.equal(fresh.prefs.get('showAI')??false,false); assert.equal(fresh.prefs.get('showAdult')??false,false);
 });
 console.log(`${passed} WASM integration tests passed.`);

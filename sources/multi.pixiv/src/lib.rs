@@ -21,11 +21,64 @@ use serde_json::Value;
 
 struct Pixiv;
 
-fn hide_adult() -> bool {
-    defaults_get::<bool>("hideAdult").unwrap_or(true)
+fn content_filter() -> models::ContentFilter {
+    models::ContentFilter {
+        show_ai: defaults_get::<bool>("showAI").unwrap_or(false),
+        show_adult: defaults_get::<bool>("showAdult").unwrap_or(false),
+    }
 }
 
 impl Pixiv {
+    fn web_list(&self, items: &[Value], has_next_page: bool) -> Result<MangaPageResult> {
+        let filter = content_filter();
+        let missing: Vec<String> = items
+            .iter()
+            .filter(|item| filter.needs_metadata(item) && !models::is_animation(item))
+            .filter_map(|item| item.get("id").or_else(|| item.get("illust_id")))
+            .map(models::text)
+            .filter(|id| models::valid_id(id))
+            .collect();
+        if missing.is_empty() {
+            return Ok(models::list(items, has_next_page, filter));
+        }
+        // Rankings omit AI/age metadata. Fetch it in batches and retain ranking order.
+        let mut metadata = Vec::new();
+        for ids in missing.chunks(50) {
+            let mut path = String::from("/ajax/illust/recommend/illusts?lang=zh");
+            for id in ids {
+                path.push_str(&format!("&illust_ids%5B%5D={id}"));
+            }
+            let data = auth::web_get(&path)?;
+            metadata.extend(
+                data["illusts"]
+                    .as_array()
+                    .ok_or_else(|| error!("无法读取作品的内容过滤标记，请稍后重试。"))?
+                    .iter()
+                    .cloned(),
+            );
+        }
+        let enriched: Vec<Value> = items
+            .iter()
+            .filter_map(|item| {
+                if !filter.needs_metadata(item) {
+                    return Some(item.clone());
+                }
+                let id = models::text(item.get("id").or_else(|| item.get("illust_id"))?);
+                let details = metadata.iter().find(|m| models::text(&m["id"]) == id)?;
+                let mut item = item.clone();
+                if let Some(value) = models::ai_type(details) {
+                    item["aiType"] = value.into();
+                }
+                if let Some(value) = models::restriction(details) {
+                    item["xRestrict"] = value.into();
+                }
+                // A missing or inaccessible work must not bypass an active filter.
+                (!filter.needs_metadata(&item)).then_some(item)
+            })
+            .collect();
+        Ok(models::list(&enriched, has_next_page, filter))
+    }
+
     fn ranking(&self, id: &str, page: i32) -> Result<MangaPageResult> {
         if page < 1 {
             bail!("页码必须大于零。");
@@ -48,7 +101,7 @@ impl Pixiv {
             Ok(models::list(
                 items,
                 data["next_url"].as_str().is_some_and(|s| !s.is_empty()),
-                hide_adult(),
+                content_filter(),
             ))
         } else {
             // The web ranking endpoint provides at most ten pages of 50 entries.
@@ -66,7 +119,7 @@ impl Pixiv {
                 || data["next"]
                     .as_str()
                     .is_some_and(|s| s.parse::<u64>().is_ok_and(|n| n > 0));
-            Ok(models::list(items, next && page < 10, hide_adult()))
+            self.web_list(items, next && page < 10)
         }
     }
 
@@ -82,8 +135,8 @@ impl Pixiv {
         if models::is_animation(&data) {
             bail!("暂不支持 Pixiv 动图（ugoira）。");
         }
-        if hide_adult() && models::is_adult(&data) {
-            bail!("该作品已被“隐藏成人作品”设置过滤。");
+        if !content_filter().allows(&data) {
+            bail!("该作品已被“内容过滤”设置隐藏，可在阅读设置中调整。");
         }
         if models::manga(&data).is_none() {
             bail!("Pixiv 未返回作品信息，作品可能已删除。");
@@ -111,6 +164,16 @@ impl Pixiv {
 impl Source for Pixiv {
     fn new() -> Self {
         set_rate_limit(2, 1, TimeUnit::Seconds);
+        // The picker and conditional account groups need an explicit initial value.
+        if defaults_get::<String>("authMode").is_none() {
+            auth::set_string("authMode", "web");
+        }
+        if !defaults_get::<bool>("contentFiltersMigrated").unwrap_or(false) {
+            if let Some(hide) = defaults_get::<bool>("hideAdult") {
+                defaults_set("showAdult", DefaultValue::Bool(!hide));
+            }
+            defaults_set("contentFiltersMigrated", DefaultValue::Bool(true));
+        }
         Self
     }
 
@@ -149,7 +212,7 @@ impl Source for Pixiv {
             if page > 1 {
                 return Ok(MangaPageResult::default());
             }
-            return Ok(models::list(&[self.detail(&id)?], false, hide_adult()));
+            return Ok(models::list(&[self.detail(&id)?], false, content_filter()));
         }
         let word = auth::encode(&query);
         if auth::token_mode() {
@@ -159,24 +222,30 @@ impl Source for Pixiv {
                 _ => "partial_match_for_tags",
             };
             let sort = if ascending { "date_asc" } else { "date_desc" };
-            let data = auth::app_get(&format!("/v1/search/illust?word={word}&search_target={target}&sort={sort}&filter=for_ios&offset={}", (i64::from(page) - 1) * 30))?;
+            let ai = if content_filter().show_ai { 1 } else { 0 };
+            let data = auth::app_get(&format!("/v1/search/illust?word={word}&search_target={target}&sort={sort}&search_ai_type={ai}&filter=for_ios&offset={}", (i64::from(page) - 1) * 30))?;
             let items = data["illusts"]
                 .as_array()
                 .ok_or_else(|| error!("Pixiv 搜索响应格式发生变化。"))?;
             Ok(models::list(
                 items,
                 data["next_url"].as_str().is_some_and(|s| !s.is_empty()),
-                hide_adult(),
+                content_filter(),
             ))
         } else {
-            let mode = if hide_adult() { "safe" } else { "all" };
+            let mode = if content_filter().show_adult {
+                "all"
+            } else {
+                "safe"
+            };
+            let ai = if content_filter().show_ai { 0 } else { 1 };
             let target = match target {
                 "exact" => "s_tag_full",
                 "text" => "s_tc",
                 _ => "s_tag",
             };
             let order = if ascending { "date" } else { "date_d" };
-            let data = auth::web_get(&format!("/ajax/search/artworks/{word}?word={word}&p={page}&order={order}&s_mode={target}&mode={mode}&type=all&lang=zh"))?;
+            let data = auth::web_get(&format!("/ajax/search/artworks/{word}?word={word}&p={page}&order={order}&s_mode={target}&mode={mode}&ai_type={ai}&type=all&lang=zh"))?;
             let result = &data["illustManga"];
             let items = result["data"]
                 .as_array()
@@ -185,11 +254,7 @@ impl Source for Pixiv {
             let total = result["total"]
                 .as_u64()
                 .ok_or_else(|| error!("Pixiv 搜索响应缺少总数。"))?;
-            Ok(models::list(
-                items,
-                (page as u64) * 60 < total && page < 1000,
-                hide_adult(),
-            ))
+            self.web_list(items, (page as u64) * 60 < total && page < 1000)
         }
     }
 

@@ -75,12 +75,59 @@ fn filters_adult_animation_and_ads_without_ending_pagination() {
         json!({"id": "4", "xRestrict": 1}),
         json!({"id": "5", "isAdContainer": true}),
     ];
-    let filtered = models::list(&items, true, true);
+    let filtered = models::list(&items, true, models::ContentFilter::default());
     assert!(filtered.entries.is_empty());
     assert!(filtered.has_next_page);
-    let visible = models::list(&items, false, false);
+    let visible = models::list(
+        &items,
+        false,
+        models::ContentFilter {
+            show_ai: true,
+            show_adult: true,
+        },
+    );
     assert_eq!(visible.entries.len(), 1);
     assert_eq!(visible.entries[0].content_rating, ContentRating::NSFW);
+}
+
+#[test]
+fn content_filters_are_independent_and_accept_web_app_markers() {
+    let items = vec![
+        json!({"id":"1", "illust_ai_type":1, "x_restrict":0}),
+        json!({"id":"2", "illust_ai_type":2, "x_restrict":0}),
+        json!({"id":"3", "aiType":1, "xRestrict":1}),
+        json!({"id":"4", "aiType":2, "xRestrict":2}),
+        json!({"id":"5", "ai_type":"2", "xRestrict":"0"}),
+    ];
+    for (show_ai, show_adult, expected) in [
+        (false, false, vec!["1"]),
+        (true, false, vec!["1", "2", "5"]),
+        (false, true, vec!["1", "3"]),
+        (true, true, vec!["1", "2", "3", "4", "5"]),
+    ] {
+        let page = models::list(
+            &items,
+            true,
+            models::ContentFilter {
+                show_ai,
+                show_adult,
+            },
+        );
+        assert_eq!(
+            page.entries
+                .iter()
+                .map(|m| m.key.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(page.has_next_page);
+    }
+    assert!(!models::is_adult(
+        &json!({"xRestrict":0, "illust_content_type":{"sexual":1}})
+    ));
+    assert_eq!(models::ai_type(&json!({"illust_ai_type":0})), Some(0));
+    assert_eq!(models::ai_type(&json!({})), None);
+    assert!(models::ContentFilter::default().needs_metadata(&json!({"illust_id":1})));
 }
 
 #[test]

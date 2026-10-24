@@ -48,17 +48,47 @@ pub fn is_animation(item: &Value) -> bool {
         || text(&item["illust_type"]) == "2"
 }
 
+fn number(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| value.as_str()?.parse().ok())
+}
+
+pub fn ai_type(item: &Value) -> Option<i64> {
+    ["illust_ai_type", "aiType", "ai_type"]
+        .iter()
+        .find_map(|key| item.get(*key).and_then(number))
+}
+
+pub fn restriction(item: &Value) -> Option<i64> {
+    ["x_restrict", "xRestrict"]
+        .iter()
+        .find_map(|key| item.get(*key).and_then(number))
+}
+
 pub fn is_adult(item: &Value) -> bool {
-    item.get("x_restrict")
-        .or_else(|| item.get("xRestrict"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0)
-        > 0
-        || item
-            .pointer("/illust_content_type/sexual")
-            .and_then(Value::as_i64)
+    // The explicit age restriction takes precedence over the ranking's sexual flag.
+    restriction(item).map(|level| level > 0).unwrap_or_else(|| {
+        item.pointer("/illust_content_type/sexual")
+            .and_then(number)
             .unwrap_or(0)
             > 0
+    })
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct ContentFilter {
+    pub show_ai: bool,
+    pub show_adult: bool,
+}
+
+impl ContentFilter {
+    pub fn allows(self, item: &Value) -> bool {
+        (self.show_ai || ai_type(item) != Some(2)) && (self.show_adult || !is_adult(item))
+    }
+
+    pub fn needs_metadata(self, item: &Value) -> bool {
+        (!self.show_ai && ai_type(item).is_none())
+            || (!self.show_adult && restriction(item).is_none())
+    }
 }
 
 pub fn manga(item: &Value) -> Option<Manga> {
@@ -115,11 +145,11 @@ pub fn manga(item: &Value) -> Option<Manga> {
     })
 }
 
-pub fn list(items: &[Value], has_next_page: bool, hide_adult: bool) -> MangaPageResult {
+pub fn list(items: &[Value], has_next_page: bool, filter: ContentFilter) -> MangaPageResult {
     MangaPageResult {
         entries: items
             .iter()
-            .filter(|item| !hide_adult || !is_adult(item))
+            .filter(|item| filter.allows(item))
             .filter_map(manga)
             .collect(),
         // Pagination follows the upstream page, even when local filtering removes every item.

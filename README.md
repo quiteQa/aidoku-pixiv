@@ -15,13 +15,13 @@ https://raw.githubusercontent.com/quiteQa/aidoku-pixiv/gh-pages/index.min.json
 ## 安装与登录
 
 1. 将 `Pixiv.aix` 发送到安装了 Aidoku 的设备，从“文件”中通过分享菜单用 Aidoku 打开，或在 Aidoku 中导入该文件。
-2. 打开 Pixiv 源的设置，在“当前登录方式”中选择所需方式。
-3. **网页登录**：点击“网页登录 Pixiv”，在 Pixiv 官方网页完成登录及验证。源会验证 `PHPSESSID` 会话，成功后关闭登录窗口。源不接收账号密码。退出时点击“退出网页登录”。
-4. **Token 登录**：选择 `Refresh Token` 或 `Access Token`，粘贴自己的 Token，点击“验证当前登录”，在页面下方“登录状态”查看结果。支持粘贴带 `Bearer ` 前缀的 Access Token。
+2. 打开 Pixiv 源的设置，通过内嵌的“登录方式”选择器选择网页登录或 Token 登录；“账号登录”区域仅显示当前方式对应的控件。布局参考 [Wenku8 源的原生登录控件](https://github.com/quiteQa/aidoku-wenku8/blob/main/res/settings.json)。
+3. **网页登录**：点击“登录 Pixiv”，在 Pixiv 官方网页完成登录及验证。源会验证 `PHPSESSID` 会话，成功后关闭登录窗口。源不接收账号密码。登录后按钮变为“退出 Pixiv”。
+4. **Token 登录**：选择 `Refresh Token` 或 `Access Token`，粘贴自己的 Token，点击“验证 Token”，在页面下方“登录状态”查看结果。支持粘贴带 `Bearer ` 前缀的 Access Token。
 
 推荐使用 Refresh Token：源会换取 Access Token，在到期前续期，并保存 Pixiv 轮换返回的 Refresh Token。直接使用 Access Token 时，到期后需手动更换。网页登录得到的是网页会话，不能自动转换成 Refresh Token；Token 需要事先自行取得。
 
-两套登录凭据独立保存，切换“当前登录方式”即可切换请求方式。网页登录成功时会自动选择网页登录。点击“清除 Token 并退出”会清除输入的 Token 和续期缓存。Token 和 Cookie 存在 Aidoku 的源设置中；输入框掩码显示，不在源码、日志或图片请求中附带 Token。请勿分享含凭据的设置或备份。
+两套登录凭据独立保存，切换“登录方式”即可切换请求方式。网页登录成功时会自动选择网页登录。点击“退出 Token 登录”会清除输入的 Token 和续期缓存。Token 和 Cookie 存在 Aidoku 的源设置中；输入框掩码显示，不在源码、日志或图片请求中附带 Token。请勿分享含凭据的设置或备份。
 
 ## 功能与范围
 
@@ -30,7 +30,9 @@ https://raw.githubusercontent.com/quiteQa/aidoku-pixiv/gh-pages/index.min.json
 - 搜索框可直接输入作品 ID 或 `https://www.pixiv.net/artworks/作品ID`。
 - 作者、标签、说明、发布日和多图阅读；支持原图与普通画质。
 - 一个作品对应一本书，所有图片合为一章，按 Pixiv 原始顺序读取。
-- 默认隐藏成人作品，可在源设置中调整；账号自身权限仍由 Pixiv 控制。
+- 阅读设置 → 内容过滤中有“显示 AI 生成作品”和“显示成人向作品”两个开关，新安装时均关闭；账号自身权限仍由 Pixiv 控制。
+
+内容过滤应用于排行榜、搜索、直接打开作品和阅读。AI 过滤依据 Pixiv 的 AI 生成标记，不推测未标记作品的创作方式。网页排行榜缺少过滤标记时，通过批量接口补充，保留原始排名和分页；不会为每个作品单独请求。升级时自动将旧版“隐藏成人作品”的选择迁移到“显示成人向作品”，保留原有偏好。
 
 暂不支持小说、ugoira 动图和将多个投稿合并成漫画系列。Aidoku 收藏仅加入本地书库，不同步到 Pixiv 收藏。设备需要能够连接 `www.pixiv.net`、`accounts.pixiv.net`、`app-api.pixiv.net`、`oauth.secure.pixiv.net` 及图片域名 `*.pximg.net`。
 
@@ -51,7 +53,7 @@ python scripts/build_list.py
 
 生成 `dist/Pixiv.aix`。包内使用 Aidoku 官方 `Payload/main.wasm` 及资源布局。
 
-`scripts/build_list.py` 按 Aidoku CLI 的格式生成 `public/index.json`、`index.min.json`、`sources/multi.pixiv-v1.aix` 和 `icons/multi.pixiv-v1.png`。提交到 `main` 后自动校验、编译和发布，PR 仅校验并提供构建产物。
+`scripts/build_list.py` 按 Aidoku CLI 的格式生成 `public/index.json`、`index.min.json`、版本化的 `sources/multi.pixiv-v*.aix` 和 `icons/multi.pixiv-v*.png`。提交到 `main` 后自动校验、编译和发布，PR 仅校验并提供构建产物。
 
 ## 仓库结构
 
@@ -86,7 +88,7 @@ cargo test --lib --release --target x86_64-pc-windows-gnu --locked
 ### 当前验证结果
 
 - 成功编译 release WASM，官方 Schema 配置校验及 Clippy 检查通过。
-- 8 项 Rust 解析测试和 14 项 WASM 集成测试，覆盖 Cookie 验证、过期会话、两种 Token、续期与轮换、认证失败重试、分页、详情、图片顺序和退出清理。
+- 9 项 Rust 解析测试和 19 项 WASM 集成测试，覆盖 Cookie 验证、过期会话、两种 Token、续期与轮换、认证失败重试、分页、详情、图片顺序、退出清理、内容过滤和旧设置迁移。
 - 已通过不带用户凭据的只读请求核对公开排行榜、搜索、作品详情和图片列表响应。
 - **尚未使用真实账号在 Aidoku 设备上完成网页登录、Token 兑换及阅读验收。** 集成测试使用模拟 HTTP 响应，不等于真实账号联调通过。
 
