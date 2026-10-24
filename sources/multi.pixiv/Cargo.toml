@@ -1,0 +1,15 @@
+[package]
+name = "aidoku-pixiv"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pixiv source for Aidoku with web session and token authentication"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+aidoku = { path = "../../vendor/aidoku", features = ["json"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+md-5 = { version = "0.10", default-features = false }

@@ -1,0 +1,7 @@
+/.cache/
+/.tools/
+/target/
+/package.aix
+*.log
+.env
+.env.*

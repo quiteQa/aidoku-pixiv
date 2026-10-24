@@ -1,0 +1,127 @@
+[
+	{
+		"type": "group",
+		"title": "登录方式",
+		"footer": "先选择登录方式，再完成下方对应的登录。切换方式不会删除另一种方式的凭据。",
+		"items": [
+			{
+				"type": "select",
+				"key": "authMode",
+				"title": "当前登录方式",
+				"values": [
+					"web",
+					"token"
+				],
+				"titles": [
+					"网页登录",
+					"Token 登录"
+				],
+				"default": "web",
+				"notification": "authChanged",
+				"refreshes": [
+					"settings",
+					"content"
+				]
+			},
+			{
+				"type": "login",
+				"method": "web",
+				"key": "webLogin",
+				"title": "网页登录 Pixiv",
+				"url": "https://www.pixiv.net/login.php",
+				"logoutTitle": "退出网页登录",
+				"clearCookiesOnLogOut": true,
+				"notification": "webLoginChanged",
+				"refreshes": [
+					"settings",
+					"content"
+				]
+			}
+		]
+	},
+	{
+		"type": "group",
+		"title": "Token 登录",
+		"footer": "Refresh Token 可自动换取并续期 Access Token；Access Token 到期后需手动更换。Token 是账号凭据，请仅使用自己的 Token。输入后点击验证登录。",
+		"items": [
+			{
+				"type": "select",
+				"key": "tokenKind",
+				"title": "Token 类型",
+				"values": [
+					"refresh",
+					"access"
+				],
+				"titles": [
+					"Refresh Token（自动续期）",
+					"Access Token"
+				],
+				"default": "refresh",
+				"notification": "tokenChanged",
+				"refreshes": [
+					"settings",
+					"content"
+				]
+			},
+			{
+				"type": "text",
+				"key": "tokenInput",
+				"title": "Token",
+				"placeholder": "粘贴所选类型的 Token",
+				"secure": true,
+				"autocorrectionDisabled": true,
+				"autocapitalizationType": 0,
+				"notification": "tokenChanged",
+				"refreshes": [
+					"settings",
+					"content"
+				]
+			},
+			{
+				"type": "button",
+				"key": "validateLogin",
+				"title": "验证当前登录",
+				"notification": "validateLogin",
+				"refreshes": [
+					"settings",
+					"content"
+				]
+			},
+			{
+				"type": "button",
+				"key": "clearToken",
+				"title": "清除 Token 并退出",
+				"notification": "clearToken",
+				"refreshes": [
+					"settings",
+					"content"
+				],
+				"confirmTitle": "清除 Token",
+				"confirmText": "清除已输入的 Token 和自动续期缓存？",
+				"destructive": true
+			}
+		]
+	},
+	{
+		"type": "group",
+		"title": "阅读设置",
+		"footer": "每个作品作为一本书，全部图片作为一章。暂不支持小说和动图。内容可见范围同时受 Pixiv 账号设置限制。",
+		"items": [
+			{
+				"type": "switch",
+				"key": "originalImages",
+				"title": "加载原图",
+				"default": true
+			},
+			{
+				"type": "switch",
+				"key": "hideAdult",
+				"title": "隐藏成人作品",
+				"default": true,
+				"refreshes": [
+					"content"
+				]
+			}
+		]
+	}
+]

@@ -1,0 +1,37 @@
+{
+	"info": {
+		"id": "multi.pixiv",
+		"name": "Pixiv",
+		"version": 1,
+		"url": "https://www.pixiv.net",
+		"contentRating": 1,
+		"languages": [
+			"zh",
+			"ja",
+			"en"
+		],
+		"minAppVersion": "0.9.0"
+	},
+	"listings": [
+		{
+			"id": "daily",
+			"name": "每日排行"
+		},
+		{
+			"id": "weekly",
+			"name": "每周排行"
+		},
+		{
+			"id": "monthly",
+			"name": "每月排行"
+		},
+		{
+			"id": "manga",
+			"name": "漫画排行"
+		}
+	],
+	"config": {
+		"supportsTagSearch": true,
+		"maximumParallelRequests": 2
+	}
+}

@@ -1,0 +1,31 @@
+[
+	{
+		"type": "select",
+		"id": "match",
+		"title": "搜索范围",
+		"options": [
+			"标签部分匹配",
+			"标签完全匹配",
+			"标题与说明"
+		],
+		"ids": [
+			"partial",
+			"exact",
+			"text"
+		],
+		"default": "partial"
+	},
+	{
+		"type": "sort",
+		"id": "sort",
+		"title": "排序",
+		"options": [
+			"发布时间"
+		],
+		"canAscend": true,
+		"default": {
+			"index": 0,
+			"ascending": false
+		}
+	}
+]
