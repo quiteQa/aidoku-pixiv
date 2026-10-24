@@ -1,0 +1,20 @@
+{
+	"name": "Pixiv for Aidoku",
+	"sources": [
+		{
+			"id": "multi.pixiv",
+			"name": "Pixiv",
+			"version": 1,
+			"iconURL": "icons/multi.pixiv-v1.png",
+			"downloadURL": "sources/multi.pixiv-v1.aix",
+			"languages": [
+				"zh",
+				"ja",
+				"en"
+			],
+			"contentRating": 1,
+			"baseURL": "https://www.pixiv.net",
+			"minAppVersion": "0.9.0"
+		}
+	]
+}
